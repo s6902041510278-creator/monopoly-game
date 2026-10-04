@@ -13,7 +13,7 @@ export interface Player {
   score: number;
   position: number;
   jailTurns: number;
-  isDev?: boolean;
+  isDev?: boolean; // ✅ รองรับแท็ก Developer
 }
 
 interface GameState {
@@ -24,12 +24,23 @@ interface GameState {
   isMoving: boolean;
 }
 
+const DEFAULT_AVATARS = [
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Bot1',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Bot2',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Bot3',
+  'https://api.dicebear.com/7.x/bottts/svg?seed=Bot4',
+];
+
 export default function Home() {
-  const [roomId, setRoomId] = useState<string>('');
-  const [joinedRoom, setJoinedRoom] = useState<string | null>(null); // ✅ บังคับเริ่มต้นเป็น null เสมอ
+  // --- UI Settings & Roles ---
+  const [role, setRole] = useState<'player' | 'developer'>('player');
+  const [selectedAvatar, setSelectedAvatar] = useState<string>(DEFAULT_AVATARS[0]);
   const [playerName, setPlayerName] = useState<string>('');
+  const [roomId, setRoomId] = useState<string>('');
+  const [joinedRoom, setJoinedRoom] = useState<string | null>(null);
   const [myPlayerId, setMyPlayerId] = useState<number | null>(null);
 
+  // --- Game States ---
   const [players, setPlayers] = useState<Player[]>([]);
   const [currentPlayerIdx, setCurrentPlayerIdx] = useState(0);
   const [diceRoll, setDiceRoll] = useState<number | null>(null);
@@ -40,7 +51,21 @@ export default function Home() {
   const [activeQuestion, setActiveQuestion] = useState<Question | null>(null);
   const [activePropertyTile, setActivePropertyTile] = useState<BoardTile | null>(null);
 
-  // --- Realtime Sync via Supabase Broadcast ---
+  // อัปโหลดรูปโปรไฟล์ตัวเอง
+  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        if (reader.result) {
+          setSelectedAvatar(reader.result as string);
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  // Realtime Sync via Supabase Broadcast
   useEffect(() => {
     if (!joinedRoom) return;
 
@@ -82,9 +107,17 @@ export default function Home() {
     });
   };
 
-  const handleJoinRoom = () => {
-    if (!playerName.trim() || !roomId.trim()) {
-      alert('กรุณากรอกชื่อผู้เล่นและรหัสห้อง!');
+  const handleEnterLobby = (isCreateRoom: boolean) => {
+    if (!playerName.trim()) {
+      alert('กรุณากรอกชื่อผู้เล่นก่อนครับ');
+      return;
+    }
+
+    let targetRoom = roomId.trim().toUpperCase();
+    if (isCreateRoom) {
+      targetRoom = 'ROOM-' + Math.floor(1000 + Math.random() * 9000);
+    } else if (!targetRoom) {
+      alert('กรุณากรอกรหัสห้องที่จะเข้าร่วม');
       return;
     }
 
@@ -93,15 +126,16 @@ export default function Home() {
     const newPlayer: Player = {
       id: pId,
       name: playerName.trim(),
-      avatar: `https://api.dicebear.com/7.x/bottts/svg?seed=${playerName.trim()}`,
+      avatar: selectedAvatar,
       score: 1000,
       position: 0,
       jailTurns: 0,
+      isDev: role === 'developer', // ✅ ใส่สถานะ Developer
     };
 
     const updatedPlayers = [...players, newPlayer];
     setPlayers(updatedPlayers);
-    setJoinedRoom(roomId.trim().toUpperCase());
+    setJoinedRoom(targetRoom);
 
     broadcastState({ players: updatedPlayers });
   };
@@ -285,50 +319,112 @@ export default function Home() {
 
   const currentPlayer = players[currentPlayerIdx];
 
-  // --- หน้าจอเข้าร่วมห้อง (Lobby) ---
+  // --- 🎨 หน้าแรก (Lobby) ตามแบบรูปที่ 3 ---
   if (!joinedRoom) {
     return (
       <main className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-4 font-sans">
         <div className="bg-slate-900 border border-slate-800 p-8 rounded-3xl max-w-md w-full shadow-2xl flex flex-col gap-5 text-center">
-          <h1 className="text-2xl font-extrabold text-amber-400">🎲 เกมเศรษฐีเพื่อการเรียนรู้</h1>
-          <p className="text-slate-400 text-sm">กรอกชื่อและรหัสห้องเพื่อเข้าเล่น Multiplayer</p>
+          <h1 className="text-2xl font-extrabold text-amber-400">เกมเศรษฐีออนไลน์</h1>
 
-          <div className="flex flex-col gap-3 text-left">
-            <div>
-              <label className="text-xs text-slate-400 font-bold mb-1 block">ชื่อผู้เล่น</label>
-              <input
-                type="text"
-                value={playerName}
-                onChange={(e) => setPlayerName(e.target.value)}
-                placeholder="เช่น อาจารย์สมคิด / StudentA"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white focus:border-amber-400 outline-none text-sm"
-              />
+          {/* สลับบทบาท ผู้เล่นทั่วไป / ผู้พัฒนา (Developer) */}
+          <div className="grid grid-cols-2 bg-slate-950 p-1.5 rounded-xl border border-slate-800">
+            <button
+              onClick={() => setRole('player')}
+              className={`py-2 rounded-lg text-xs font-bold transition-all ${
+                role === 'player' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              ผู้เล่นทั่วไป
+            </button>
+            <button
+              onClick={() => setRole('developer')}
+              className={`py-2 rounded-lg text-xs font-bold transition-all ${
+                role === 'developer' ? 'bg-amber-500 text-slate-950' : 'text-slate-400 hover:text-white'
+              }`}
+            >
+              ผู้พัฒนา (Developer)
+            </button>
+          </div>
+
+          {/* เลือกอวาตาร์ หรือ อัปโหลดรูป */}
+          <div className="flex flex-col gap-2">
+            <label className="text-xs text-slate-400 font-bold">เลือกอวาตาร์ หรือ อัปโหลดรูปโปรไฟล์</label>
+            <div className="flex justify-center items-center gap-3">
+              {DEFAULT_AVATARS.map((avatar, i) => (
+                <button
+                  key={i}
+                  onClick={() => setSelectedAvatar(avatar)}
+                  className={`w-12 h-12 rounded-full border-2 overflow-hidden transition-all ${
+                    selectedAvatar === avatar ? 'border-amber-400 scale-110 shadow-lg shadow-amber-500/20' : 'border-slate-800 opacity-60'
+                  }`}
+                >
+                  <img src={avatar} alt={`Avatar ${i}`} className="w-full h-full object-cover" />
+                </button>
+              ))}
             </div>
 
-            <div>
-              <label className="text-xs text-slate-400 font-bold mb-1 block">รหัสห้อง (Room Code)</label>
+            <label className="cursor-pointer mt-2 inline-flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-xs text-amber-400 py-2 px-4 rounded-xl border border-slate-700 transition-all">
+              📁 อัปโหลดรูปภาพตัวเอง
+              <input type="file" accept="image/*" onChange={handleFileUpload} className="hidden" />
+            </label>
+          </div>
+
+          {/* ตัวอย่างโปรไฟล์ของคุณ */}
+          <div className="flex flex-col items-center gap-1 my-1">
+            <div className="relative">
+              <img src={selectedAvatar} alt="Preview" className="w-16 h-16 rounded-full border-2 border-amber-400 object-cover shadow-md" />
+              {role === 'developer' && (
+                <span className="absolute -bottom-1 -right-2 bg-amber-500 text-slate-950 font-black text-[9px] px-1.5 py-0.5 rounded-full border border-slate-900 shadow">
+                  DEV
+                </span>
+              )}
+            </div>
+            <span className="text-[11px] text-slate-400">ตัวอย่างโปรไฟล์ของคุณ</span>
+          </div>
+
+          {/* กรอกชื่อผู้เล่น */}
+          <div className="flex flex-col gap-1 text-left">
+            <label className="text-xs text-slate-400 font-bold">ชื่อผู้เล่น</label>
+            <input
+              type="text"
+              value={playerName}
+              onChange={(e) => setPlayerName(e.target.value)}
+              placeholder="กรอกชื่อของคุณ"
+              className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white focus:border-amber-400 outline-none text-sm"
+            />
+          </div>
+
+          {/* ส่วนสร้างห้อง และ เข้าร่วมห้อง */}
+          <div className="flex flex-col gap-3 pt-2">
+            <button
+              onClick={() => handleEnterLobby(true)}
+              className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold py-3 rounded-xl transition-all shadow-lg shadow-amber-500/20"
+            >
+              👑 สร้างห้องใหม่ (Create Room)
+            </button>
+
+            <div className="flex gap-2 items-center">
               <input
                 type="text"
                 value={roomId}
                 onChange={(e) => setRoomId(e.target.value)}
-                placeholder="เช่น ROOM101"
-                className="w-full bg-slate-950 border border-slate-800 rounded-xl p-3 text-white focus:border-amber-400 outline-none text-sm uppercase"
+                placeholder="กรอกรหัสห้องเพื่อน (เช่น ROOM-1234)"
+                className="flex-1 bg-slate-950 border border-slate-800 rounded-xl p-3 text-white focus:border-amber-400 outline-none text-sm uppercase"
               />
+              <button
+                onClick={() => handleEnterLobby(false)}
+                className="bg-slate-800 hover:bg-slate-700 text-amber-400 font-bold px-4 py-3 rounded-xl border border-slate-700 text-sm whitespace-nowrap transition-all"
+              >
+                เข้าห้อง
+              </button>
             </div>
           </div>
-
-          <button
-            onClick={handleJoinRoom}
-            className="w-full bg-amber-500 hover:bg-amber-400 text-slate-950 font-extrabold py-3 rounded-xl transition-all shadow-lg shadow-amber-500/20"
-          >
-            🚀 เข้าสู่ห้องเล่นเกม
-          </button>
         </div>
       </main>
     );
   }
 
-  // --- หน้ากระดานเกมหลัก ---
+  // --- 🎲 หน้ากระดานเกมหลัก ---
   return (
     <main className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-4 gap-6 font-sans">
       <div className="flex flex-col gap-2 w-full max-w-[620px]">
@@ -345,11 +441,19 @@ export default function Home() {
                 idx === currentPlayerIdx ? 'bg-amber-500/10 border border-amber-500/40' : 'opacity-60'
               }`}
             >
-              <img src={p.avatar} alt={p.name} className="w-10 h-10 rounded-full border border-amber-400" />
+              <div className="relative">
+                <img src={p.avatar} alt={p.name} className="w-10 h-10 rounded-full border border-amber-400 object-cover" />
+                {p.isDev && (
+                  <span className="absolute -bottom-1 -right-1 bg-amber-500 text-slate-950 font-black text-[8px] px-1 rounded border border-slate-900">
+                    DEV
+                  </span>
+                )}
+              </div>
               <div>
                 <div className="font-bold text-sm text-slate-100 flex items-center gap-1">
                   {p.name}
                   {p.id === myPlayerId && <span className="text-[10px] text-amber-400">(คุณ)</span>}
+                  {p.isDev && <span className="text-[10px] bg-amber-500/20 text-amber-400 border border-amber-500/40 px-1 rounded">Developer</span>}
                 </div>
                 <div className="text-xs text-amber-400 font-extrabold">{p.score} PTS</div>
               </div>
@@ -365,7 +469,7 @@ export default function Home() {
           <div className="bg-slate-900/90 backdrop-blur border border-slate-800 p-6 rounded-2xl shadow-2xl flex flex-col items-center gap-4 pointer-events-auto max-w-[240px] w-full text-center">
             <div className="text-xs text-slate-400 font-bold">ตาของ:</div>
             <div className="flex items-center gap-2">
-              <img src={currentPlayer?.avatar} alt={currentPlayer?.name} className="w-6 h-6 rounded-full" />
+              <img src={currentPlayer?.avatar} alt={currentPlayer?.name} className="w-6 h-6 rounded-full object-cover" />
               <span className="font-bold text-amber-400">{currentPlayer?.name || 'รอผู้เล่น'}</span>
             </div>
 
