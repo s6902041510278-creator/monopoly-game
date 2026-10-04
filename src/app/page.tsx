@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import Board from '../components/Board';
 import { BOARD_TILES, BoardTile } from '../config/boardData';
 import { QUESTIONS_DATABASE, Question } from '../config/questions';
@@ -13,7 +13,7 @@ export interface Player {
   score: number;
   position: number;
   jailTurns: number;
-  isDev?: boolean; // ✅ รองรับแท็ก Developer
+  isDev?: boolean;
 }
 
 interface GameState {
@@ -51,6 +51,18 @@ export default function Home() {
   const [activeQuestion, setActiveQuestion] = useState<Question | null>(null);
   const [activePropertyTile, setActivePropertyTile] = useState<BoardTile | null>(null);
 
+  const channelRef = useRef<any>(null);
+  const playersRef = useRef<Player[]>([]);
+  const stateRef = useRef({ currentPlayerIdx, properties, diceRoll, isMoving });
+
+  useEffect(() => {
+    playersRef.current = players;
+  }, [players]);
+
+  useEffect(() => {
+    stateRef.current = { currentPlayerIdx, properties, diceRoll, isMoving };
+  }, [currentPlayerIdx, properties, diceRoll, isMoving]);
+
   // อัปโหลดรูปโปรไฟล์ตัวเอง
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -65,42 +77,56 @@ export default function Home() {
     }
   };
 
-  // Realtime Sync via Supabase Broadcast
+  // ✅ Realtime Handshake & Broadcast Sync
   useEffect(() => {
-    if (!joinedRoom) return;
+    if (!joinedRoom || !myPlayerId) return;
 
     const channel = supabase.channel(`room_${joinedRoom}`, {
       config: { broadcast: { self: false } },
     });
 
+    channelRef.current = channel;
+
     channel
       .on('broadcast', { event: 'game_update' }, ({ payload }) => {
-        const state: GameState = payload;
-        setPlayers(state.players);
-        setCurrentPlayerIdx(state.currentPlayerIdx);
-        setProperties(state.properties);
-        setDiceRoll(state.diceRoll);
-        setIsMoving(state.isMoving);
+        if (payload.players) setPlayers(payload.players);
+        if (payload.currentPlayerIdx !== undefined) setCurrentPlayerIdx(payload.currentPlayerIdx);
+        if (payload.properties !== undefined) setProperties(payload.properties);
+        if (payload.diceRoll !== undefined) setDiceRoll(payload.diceRoll);
+        if (payload.isMoving !== undefined) setIsMoving(payload.isMoving);
       })
-      .subscribe();
+      .on('broadcast', { event: 'request_sync' }, () => {
+        // เมื่อมีคนเข้ามาใหม่ ให้เครื่องเก่าส่งข้อมูลสถานะปัจจุบันกลับไปหาคนใหม่
+        broadcastFullState(playersRef.current, stateRef.current);
+      })
+      .subscribe((status) => {
+        if (status === 'SUBSCRIBED') {
+          // แจ้งเพื่อนในห้องว่ามีคนเข้ามาใหม่ ให้ทุกคนส่งข้อมูลอัปเดตกลับมา
+          channel.send({
+            type: 'broadcast',
+            event: 'request_sync',
+            payload: {},
+          });
+        }
+      });
 
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [joinedRoom]);
+  }, [joinedRoom, myPlayerId]);
 
-  const broadcastState = (newState: Partial<GameState>) => {
-    if (!joinedRoom) return;
+  const broadcastFullState = (currentPlayersList: Player[], extraState?: any) => {
+    if (!channelRef.current) return;
 
-    const fullState: GameState = {
-      players: newState.players ?? players,
-      currentPlayerIdx: newState.currentPlayerIdx ?? currentPlayerIdx,
-      properties: newState.properties ?? properties,
-      diceRoll: newState.diceRoll ?? diceRoll,
-      isMoving: newState.isMoving ?? isMoving,
+    const fullState = {
+      players: currentPlayersList,
+      currentPlayerIdx: extraState?.currentPlayerIdx ?? stateRef.current.currentPlayerIdx,
+      properties: extraState?.properties ?? stateRef.current.properties,
+      diceRoll: extraState?.diceRoll ?? stateRef.current.diceRoll,
+      isMoving: extraState?.isMoving ?? stateRef.current.isMoving,
     };
 
-    supabase.channel(`room_${joinedRoom}`).send({
+    channelRef.current.send({
       type: 'broadcast',
       event: 'game_update',
       payload: fullState,
@@ -123,6 +149,7 @@ export default function Home() {
 
     const pId = Date.now();
     setMyPlayerId(pId);
+
     const newPlayer: Player = {
       id: pId,
       name: playerName.trim(),
@@ -130,14 +157,16 @@ export default function Home() {
       score: 1000,
       position: 0,
       jailTurns: 0,
-      isDev: role === 'developer', // ✅ ใส่สถานะ Developer
+      isDev: role === 'developer',
     };
 
-    const updatedPlayers = [...players, newPlayer];
+    const updatedPlayers = [...playersRef.current, newPlayer];
     setPlayers(updatedPlayers);
     setJoinedRoom(targetRoom);
 
-    broadcastState({ players: updatedPlayers });
+    setTimeout(() => {
+      broadcastFullState(updatedPlayers);
+    }, 500);
   };
 
   const rollDice = () => {
@@ -161,7 +190,7 @@ export default function Home() {
         setIsRolling(false);
         setIsMoving(true);
 
-        broadcastState({ diceRoll: finalDice, isMoving: true });
+        broadcastFullState(playersRef.current, { diceRoll: finalDice, isMoving: true });
         movePlayerStepByStep(finalDice);
       }
     }, 100);
@@ -182,14 +211,14 @@ export default function Home() {
           if (nextPos === 0) newScore += 300;
           return { ...p, position: nextPos, score: newScore };
         });
-        broadcastState({ players: nextPlayers });
+        broadcastFullState(nextPlayers);
         return nextPlayers;
       });
 
       if (currentStep >= stepsRemaining) {
         clearInterval(interval);
         setIsMoving(false);
-        broadcastState({ isMoving: false });
+        broadcastFullState(playersRef.current, { isMoving: false });
         setTimeout(() => handleTileAction(finalPosition), 100);
       }
     }, 200);
@@ -229,7 +258,7 @@ export default function Home() {
         idx === currentPlayerIdx ? { ...p, position: randomPos } : p
       );
       setPlayers(updated);
-      broadcastState({ players: updated });
+      broadcastFullState(updated);
       nextTurn();
     } else if (currentTile.type === 'JAIL') {
       alert(`🔒 ตกช่องคุก! คุณจะถูกขังเป็นเวลา 2 รอบ`);
@@ -237,7 +266,7 @@ export default function Home() {
         idx === currentPlayerIdx ? { ...p, jailTurns: 2 } : p
       );
       setPlayers(updated);
-      broadcastState({ players: updated });
+      broadcastFullState(updated);
       nextTurn();
     } else if (currentTile.type === 'RANDOM_REWARD') {
       handleRandomRewardEvent();
@@ -258,7 +287,7 @@ export default function Home() {
       idx === currentPlayerIdx ? { ...p, score: Math.max(0, p.score + reward.score) } : p
     );
     setPlayers(updated);
-    broadcastState({ players: updated });
+    broadcastFullState(updated);
     nextTurn();
   };
 
@@ -269,7 +298,7 @@ export default function Home() {
       return p;
     });
     setPlayers(updated);
-    broadcastState({ players: updated });
+    broadcastFullState(updated);
     nextTurn();
   };
 
@@ -286,7 +315,7 @@ export default function Home() {
 
       setPlayers(updatedPlayers);
       setProperties(updatedProps);
-      broadcastState({ players: updatedPlayers, properties: updatedProps });
+      broadcastFullState(updatedPlayers, { properties: updatedProps });
     }
     setActivePropertyTile(null);
     nextTurn();
@@ -306,7 +335,7 @@ export default function Home() {
       idx === currentPlayerIdx ? { ...p, score: Math.max(0, p.score + scoreChange) } : p
     );
     setPlayers(updated);
-    broadcastState({ players: updated });
+    broadcastFullState(updated);
     setActiveQuestion(null);
     nextTurn();
   };
@@ -314,12 +343,12 @@ export default function Home() {
   const nextTurn = () => {
     const nextIdx = (currentPlayerIdx + 1) % Math.max(1, players.length);
     setCurrentPlayerIdx(nextIdx);
-    broadcastState({ currentPlayerIdx: nextIdx });
+    broadcastFullState(playersRef.current, { currentPlayerIdx: nextIdx });
   };
 
   const currentPlayer = players[currentPlayerIdx];
 
-  // --- 🎨 หน้าแรก (Lobby) ตามแบบรูปที่ 3 ---
+  // --- 🎨 หน้าแรก (Lobby) ---
   if (!joinedRoom) {
     return (
       <main className="min-h-screen bg-slate-950 text-white flex flex-col items-center justify-center p-4 font-sans">
